@@ -2,13 +2,20 @@ const express = require('express');
 const swaggerJsDoc = require('swagger-jsdoc');
 const swaggerUi = require('swagger-ui-express');
 const smpp = require('smpp');
-
-const session = new smpp.Session({ host: '195.246.103.248', port: 2222 });
-let isConnected = false;
-let isConnecting = false;
+const winston = require('winston');
 
 const app = express();
 app.use(express.json());
+
+// Configure Winston for logging
+const logger = winston.createLogger({
+  level: 'info',
+  format: winston.format.combine(winston.format.timestamp(), winston.format.json()),
+  transports: [
+    new winston.transports.File({ filename: 'app.log', level: 'info' }),
+    new winston.transports.Console(),
+  ],
+});
 
 // Swagger Configuration
 const swaggerOptions = {
@@ -31,8 +38,14 @@ const swaggerOptions = {
 const swaggerDocs = swaggerJsDoc(swaggerOptions);
 app.use('/api-docs', swaggerUi.serve, swaggerUi.setup(swaggerDocs));
 
+// Create an SMPP session
+const session = new smpp.Session({ host: '195.246.103.248', port: 2222 });
+let isConnected = false;
+let isConnecting = false;
+
+// Handle SMPP session events
 session.on('connect', () => {
-  console.log('Connected to SMPP server');
+  logger.info('Connected to SMPP server');
   session.bind_transceiver(
     {
       system_id: 'Sayohon2',
@@ -44,9 +57,9 @@ session.on('connect', () => {
       if (pdu.command_status === 0) {
         isConnected = true;
         isConnecting = false;
-        console.log('Successfully bound to SMPP server');
+        logger.info('Successfully bound to SMPP server');
       } else {
-        console.error('Binding failed with status:', pdu.command_status, 'PDU:', pdu);
+        logger.error('Binding failed with status:', pdu.command_status);
         session.close();
       }
     },
@@ -54,14 +67,14 @@ session.on('connect', () => {
 });
 
 session.on('close', () => {
-  console.log('SMPP connection is now closed');
+  logger.info('SMPP connection is now closed');
   isConnected = false;
   isConnecting = false;
   reconnectToServer();
 });
 
 session.on('error', (error) => {
-  console.error('SMPP error:', error.message || error);
+  logger.error('SMPP error:', error.message || error);
   isConnected = false;
   isConnecting = false;
   reconnectToServer();
@@ -69,7 +82,7 @@ session.on('error', (error) => {
 
 function reconnectToServer() {
   if (isConnecting) return;
-  console.log('Reconnecting to SMPP server...');
+  logger.info('Reconnecting to SMPP server...');
   isConnecting = true;
   setTimeout(() => {
     session.connect();
@@ -90,10 +103,10 @@ function sendSMS(from, to, text) {
       },
       (pdu) => {
         if (pdu.command_status === 0) {
-          console.log(`Message sent successfully with ID: ${pdu.message_id}`);
+          logger.info(`Message sent successfully with ID: ${pdu.message_id}`);
           resolve({ messageId: pdu.message_id });
         } else {
-          console.log(`Failed to send message, status code: ${pdu.command_status}`);
+          logger.error(`Failed to send message, status code: ${pdu.command_status}`);
           reject(`Failed to send message, status code: ${pdu.command_status}`);
         }
       },
@@ -153,17 +166,23 @@ app.post('/send-sms', async (req, res) => {
   const from = '+992880514004'; // Customize with your source address
   const to = `+992${phoneNumber}`;
 
+  if (!phoneNumber || !text) {
+    logger.error('Validation error: Phone number and text cannot be empty.');
+    return res.status(400).json({ message: 'Phone number and text cannot be empty.' });
+  }
+
   try {
     const result = await sendSMS(from, to, text);
     res.status(200).json(result);
   } catch (error) {
+    logger.error('Error sending message:', error);
     res.status(500).json({ message: error });
   }
 });
 
 // Start server
 const PORT = 3000;
-app.listen(PORT, () => console.log(`Server running on http://localhost:${PORT}`));
+app.listen(PORT, () => logger.info(`Server running on http://localhost:${PORT}`));
 
 // Initiate connection to the SMPP server
 session.connect();
